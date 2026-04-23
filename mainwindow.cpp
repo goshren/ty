@@ -2,15 +2,13 @@
 #include <QDebug>
 #include <QDateTime>
 #include <QMessageBox>
-#include <QDir>
-#include <QApplication>
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
 {
     // 设置窗口基本属性
-    this->setWindowTitle("双体水下机器人控制终端");
-    this->resize(800, 600);
+    this->setWindowTitle("辐射与GPS轨迹监控终端");
+    this->resize(1000, 650);
 
     // 1. 初始化界面
     initUI();
@@ -45,7 +43,7 @@ void MainWindow::initUI()
     QHBoxLayout *layNetwork = new QHBoxLayout(grpNetwork);
 
     layNetwork->addWidget(new QLabel("IP 地址:"));
-    leIp = new QLineEdit("192.168.1.138");
+    leIp = new QLineEdit("196.168.1.190"); // 替换为您下位机的默认IP
     layNetwork->addWidget(leIp);
 
     layNetwork->addWidget(new QLabel("端口:"));
@@ -56,6 +54,10 @@ void MainWindow::initUI()
     btnConnect = new QPushButton("连接下位机");
     connect(btnConnect, &QPushButton::clicked, this, &MainWindow::onConnectButtonClicked);
     layNetwork->addWidget(btnConnect);
+
+    lblTime = new QLabel("数据时间: 暂无");
+    lblTime->setStyleSheet("margin-left: 20px; color: #555;");
+    layNetwork->addWidget(lblTime);
     layNetwork->addStretch();
 
     mainLayout->addWidget(grpNetwork);
@@ -72,43 +74,45 @@ void MainWindow::initUI()
     QVBoxLayout *layMap = new QVBoxLayout(grpMap);
 
     mapView = new QWebEngineView(this);
-        // 直接使用 qrc 协议读取编译进程序内部的 html 文件
     mapView->setUrl(QUrl("qrc:/map.html"));
     layMap->addWidget(mapView);
 
     layMiddle->addWidget(grpMap, 5);
 
     // ------------------------------------------
-    // 右侧：数据与控制面板 (垂直堆叠)
+    // 右侧：数据面板 (垂直堆叠)
     // ------------------------------------------
     QVBoxLayout *layRightPanel = new QVBoxLayout();
 
-    // 模块 1: 实时仪表盘展示 (横向排列 3 个仪表盘)
-    QGroupBox *grpGauges = new QGroupBox("实时核心状态");
+    // 模块 1: GPS 简易状态
+    QGroupBox *grpGps = new QGroupBox("定位数据");
+    QHBoxLayout *layGps = new QHBoxLayout(grpGps);
+    lblGpsStatus = new QLabel("未定位");
+    lblGpsLat = new QLabel("纬度: 0.000000");
+    lblGpsLon = new QLabel("经度: 0.000000");
+    layGps->addWidget(lblGpsStatus);
+    layGps->addWidget(lblGpsLat);
+    layGps->addWidget(lblGpsLon);
+    layRightPanel->addWidget(grpGps);
+
+    // 模块 2: 实时仪表盘展示
+    QGroupBox *grpGauges = new QGroupBox("实时辐射监测");
     QHBoxLayout *layGauges = new QHBoxLayout(grpGauges);
 
-    // 参数依次为：标题，单位，量程最小值，量程最大值，主题颜色
-    gaugeTemp = new DashboardGauge("水温", "℃", 0, 40, QColor(255, 87, 34)); // 橙色
-    gaugeSalinity = new DashboardGauge("盐度", "PSU", 0, 40, QColor(33, 150, 243)); // 蓝色
-    gaugeDoConc = new DashboardGauge("溶解氧", "mg/L", 0, 20, QColor(76, 175, 80)); // 绿色
-
-    layGauges->addWidget(gaugeTemp);
-    layGauges->addWidget(gaugeSalinity);
-    layGauges->addWidget(gaugeDoConc);
+    // 创建辐射仪表盘：标题，单位，最小值，最大值(假设5.0为常规量程上限)，主题颜色(红色警告色)
+    gaugeRadiation = new DashboardGauge("辐射剂量", "μSv", 0, 5.0, QColor(244, 67, 54));
+    layGauges->addWidget(gaugeRadiation);
     layRightPanel->addWidget(grpGauges, 1);
 
-    // 模块 2: 动态历史曲线图 (显示最近 60 帧)
-    QGroupBox *grpChart = new QGroupBox("环境趋势曲线");
+    // 模块 3: 动态历史曲线图 (显示最近 60 帧)
+    QGroupBox *grpChart = new QGroupBox("辐射趋势曲线");
     QVBoxLayout *layChart = new QVBoxLayout(grpChart);
 
     trendChart = new QChart();
-    seriesTemp = new QLineSeries();
-    seriesTemp->setName("水温 (℃)");
-    seriesDoConc = new QLineSeries();
-    seriesDoConc->setName("溶氧 (mg/L)");
+    seriesRadiation = new QLineSeries();
+    seriesRadiation->setName("辐射剂量 (μSv)");
 
-    trendChart->addSeries(seriesTemp);
-    trendChart->addSeries(seriesDoConc);
+    trendChart->addSeries(seriesRadiation);
 
     axisX = new QValueAxis();
     axisX->setRange(0, 60); // 初始显示 0-60 帧
@@ -116,61 +120,25 @@ void MainWindow::initUI()
     axisX->setTitleText("时间 (帧)");
 
     axisY = new QValueAxis();
-    axisY->setRange(0, 40); // Y轴范围，包容水温(0-40)和溶氧(0-20)
-    axisY->setTitleText("数值");
+    axisY->setRange(0, 5.0); // Y轴范围
+    axisY->setTitleText("μSv");
 
     trendChart->addAxis(axisX, Qt::AlignBottom);
     trendChart->addAxis(axisY, Qt::AlignLeft);
-    seriesTemp->attachAxis(axisX);
-    seriesTemp->attachAxis(axisY);
-    seriesDoConc->attachAxis(axisX);
-    seriesDoConc->attachAxis(axisY);
+    seriesRadiation->attachAxis(axisX);
+    seriesRadiation->attachAxis(axisY);
 
-    // 隐藏图表自带的外边距，更紧凑
     trendChart->layout()->setContentsMargins(0, 0, 0, 0);
     trendChart->setBackgroundRoundness(0);
 
     chartView = new QChartView(trendChart);
-    chartView->setRenderHint(QPainter::Antialiasing); // 抗锯齿
+    chartView->setRenderHint(QPainter::Antialiasing);
     layChart->addWidget(chartView);
 
-    timeFrameIndex = 0; // 初始化帧计数器
-    layRightPanel->addWidget(grpChart, 2); // 曲线图给大一点的权重
+    timeFrameIndex = 0;
+    layRightPanel->addWidget(grpChart, 2);
 
-    // 模块 3: GPS 简易状态
-    QGroupBox *grpGps = new QGroupBox("定位数据");
-    QHBoxLayout *layGps = new QHBoxLayout(grpGps);
-    lblGpsStatus = new QLabel("未定位");
-    lblGpsLat = new QLabel("纬度: 0");
-    lblGpsLon = new QLabel("经度: 0");
-    layGps->addWidget(lblGpsStatus);
-    layGps->addWidget(lblGpsLat);
-    layGps->addWidget(lblGpsLon);
-    layRightPanel->addWidget(grpGps);
-
-    // 模块 4: 设备控制面板 (保持原有 Lambda 生成逻辑不变)
-    QGroupBox *grpControl = new QGroupBox("设备控制面板");
-    QGridLayout *layControl = new QGridLayout(grpControl);
-    struct RelayInfo { int id; QString name; };
-    RelayInfo relays[] = { {1, "增氧机"}, {2, "投喂器"}, {3, "补温器"}, {4, "换水器"} };
-    for (int i = 0; i < 4; ++i) {
-        QLabel *lblName = new QLabel(QString("继电器 %1: <b>%2</b>").arg(relays[i].id).arg(relays[i].name));
-        QPushButton *btnOn = new QPushButton("打开");
-        QPushButton *btnOff = new QPushButton("关闭");
-        btnOn->setFixedWidth(60); btnOff->setFixedWidth(60);
-        btnOn->setStyleSheet("QPushButton { background-color: #4CAF50; color: white; border-radius: 3px; padding: 5px; }");
-        btnOff->setStyleSheet("QPushButton { background-color: #f44336; color: white; border-radius: 3px; padding: 5px; }");
-        layControl->addWidget(lblName, i, 0);
-        layControl->addWidget(btnOn, i, 1);
-        layControl->addWidget(btnOff, i, 2);
-        int id = relays[i].id; QString name = relays[i].name;
-        connect(btnOn, &QPushButton::clicked, this, [this, id, name]() { sendRelayCommand(id, "ON"); });
-        connect(btnOff, &QPushButton::clicked, this, [this, id, name]() { sendRelayCommand(id, "OFF"); });
-    }
-    layRightPanel->addWidget(grpControl);
-
-    // 把右侧装入主布局
-    layMiddle->addLayout(layRightPanel, 3); // 给右侧布局稍微多一点权重，因为塞了图表
+    layMiddle->addLayout(layRightPanel, 3);
 
     // ==========================================
     // 区域 3: 运行日志区
@@ -179,7 +147,7 @@ void MainWindow::initUI()
     QVBoxLayout *layLog = new QVBoxLayout(grpLog);
     txtLog = new QTextEdit();
     txtLog->setReadOnly(true);
-    txtLog->setMaximumHeight(120);
+    txtLog->setMaximumHeight(100);
     layLog->addWidget(txtLog);
 
     mainLayout->addWidget(grpLog);
@@ -219,7 +187,7 @@ void MainWindow::onDisconnected()
 
 void MainWindow::onSocketError(QAbstractSocket::SocketError error)
 {
-    Q_UNUSED(error); // 消除警告
+    Q_UNUSED(error);
     appendLog("网络错误: " + tcpSocket->errorString());
 }
 
@@ -233,19 +201,8 @@ void MainWindow::onReadyRead()
     }
 }
 
-void MainWindow::sendRelayCommand(int relayId, const QString &action)
-{
-    if (tcpSocket->state() == QAbstractSocket::ConnectedState) {
-        QString cmd = QString("RELAY %1 %2\n").arg(relayId).arg(action);
-        tcpSocket->write(cmd.toUtf8());
-        tcpSocket->flush();
-    } else {
-        QMessageBox::warning(this, "发送失败", "未连接到下位机，请先连接网络！");
-    }
-}
-
 // ==========================================
-// 数据解析与地图联动 (唯一正确的解析函数)
+// 核心解析逻辑：适配最新的 JSON 格式
 // ==========================================
 void MainWindow::parseSensorData(const QByteArray &jsonData)
 {
@@ -256,99 +213,56 @@ void MainWindow::parseSensorData(const QByteArray &jsonData)
 
     if (jsonDoc.isObject()) {
         QJsonObject rootObj = jsonDoc.object();
-        double currentTemp = 0.0, currentDo = 0.0;
-        bool hasData = false;
 
-        // 1. 更新 CTD
-        if (rootObj.contains("ctd")) {
-            QJsonObject ctdObj = rootObj.value("ctd").toObject();
-            currentTemp = ctdObj.value("t").toDouble();
-            gaugeTemp->setValue(currentTemp); // 更新仪表盘
-            gaugeSalinity->setValue(ctdObj.value("s").toDouble());
-            hasData = true;
+        // 1. 解析时间
+        if (rootObj.contains("time")) {
+            lblTime->setText("数据时间: " + rootObj.value("time").toString());
         }
 
-        // 2. 更新 DO
-        if (rootObj.contains("do")) {
-            QJsonObject doObj = rootObj.value("do").toObject();
-            currentDo = doObj.value("conc").toDouble();
-            gaugeDoConc->setValue(currentDo); // 更新仪表盘
-            hasData = true;
-        }
+        // 2. 解析辐射数据并更新仪表盘和折线图
+        if (rootObj.contains("radiation")) {
+            QJsonObject radObj = rootObj.value("radiation").toObject();
+            if (radObj.contains("dose_usv")) {
+                double dose = radObj.value("dose_usv").toDouble();
 
-        // 3. 核心：更新折线图 (超过 60 帧则滚动 X 轴)
-        if (hasData) {
-            timeFrameIndex++;
-            seriesTemp->append(timeFrameIndex, currentTemp);
-            seriesDoConc->append(timeFrameIndex, currentDo);
+                // 更新仪表盘
+                gaugeRadiation->setValue(dose);
 
-            if (timeFrameIndex > 60) {
-                // X 轴整体向右平移 1 帧，实现滚动效果
-                axisX->setRange(timeFrameIndex - 60, timeFrameIndex);
-                // 为了防止内存无限增长，移除最旧的数据点
-                seriesTemp->remove(0);
-                seriesDoConc->remove(0);
+                // 更新历史折线图
+                timeFrameIndex++;
+                seriesRadiation->append(timeFrameIndex, dose);
+
+                // 超过60帧后，X轴向右平移，实现滚动效果
+                if (timeFrameIndex > 60) {
+                    axisX->setRange(timeFrameIndex - 60, timeFrameIndex);
+                    seriesRadiation->remove(0); // 移除旧数据防止内存泄漏
+                }
             }
         }
 
-        // 4. 解析 GPS 驱动地图 (原有逻辑不变)
+        // 3. 解析 GPS 数据并驱动地图更新
         if (rootObj.contains("gps")) {
             QJsonObject gpsObj = rootObj.value("gps").toObject();
-            QString status = gpsObj.value("st").toString();
-            QString latStr = gpsObj.value("lat").toString();
-            QString lonStr = gpsObj.value("lon").toString();
+            int valid = gpsObj.value("valid").toInt();
+            double lat = gpsObj.value("lat").toDouble();
+            double lon = gpsObj.value("lon").toDouble();
 
-            lblGpsLat->setText("纬度: " + latStr);
-            lblGpsLon->setText("经度: " + lonStr);
+            lblGpsLat->setText(QString("纬度: %1").arg(lat, 0, 'f', 6));
+            lblGpsLon->setText(QString("经度: %1").arg(lon, 0, 'f', 6));
 
-            if (status == "A") {
+            if (valid == 1) {
                 lblGpsStatus->setText("已定位");
                 lblGpsStatus->setStyleSheet("color: green; font-weight: bold;");
-                double decLat = convertNmeaToDecimal(latStr);
-                double decLon = convertNmeaToDecimal(lonStr);
+
+                // 调用 map.html 中的 updateRobotPosition 函数
                 if (mapView && mapView->page()) {
-                    QString jsCode = QString("updateRobotPosition(%1, %2);").arg(decLon, 0, 'f', 6).arg(decLat, 0, 'f', 6);
+                    QString jsCode = QString("updateRobotPosition(%1, %2);").arg(lon, 0, 'f', 6).arg(lat, 0, 'f', 6);
                     mapView->page()->runJavaScript(jsCode);
                 }
             } else {
-                lblGpsStatus->setText("搜索中 (V)");
+                lblGpsStatus->setText("未定位 (valid: 0)");
                 lblGpsStatus->setStyleSheet("color: red; font-weight: bold;");
             }
         }
     }
-}
-
-// ==========================================
-// NMEA 格式转十进制度数
-// ==========================================
-double MainWindow::convertNmeaToDecimal(const QString &nmeaStr)
-{
-    QStringList parts = nmeaStr.split(" ", QString::SkipEmptyParts);
-    if (parts.size() < 1) return 0.0;
-
-    QString valStr = parts[0];
-    if (valStr.isEmpty() || valStr == "0") return 0.0;
-
-    double val = valStr.toDouble();
-    int degrees = 0;
-    double minutes = 0.0;
-
-    if (val < 10000) {
-        degrees = val / 100;
-        minutes = val - (degrees * 100);
-    } else {
-        degrees = val / 100;
-        minutes = val - (degrees * 100);
-    }
-
-    double decimal = degrees + (minutes / 60.0);
-
-    if (parts.size() == 2) {
-        QString dir = parts[1].toUpper();
-        if (dir == "S" || dir == "W") {
-            decimal = -decimal;
-        }
-    }
-
-    return decimal;
 }

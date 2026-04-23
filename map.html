@@ -6,29 +6,79 @@
     <script type="text/javascript" src="https://api.map.baidu.com/api?v=3.0&ak=jVcaNXWO0Yand6t0B8kX8PbNKuNphXgN"></script>
     <style>
         html, body, #allmap { width: 100%; height: 100%; margin: 0; padding: 0; overflow: hidden; }
-        /* 隐藏百度地图的 Logo 提升沉浸感（可选） */
         .BMap_cpyCtrl, .anchorBL { display: none; }
     </style>
 </head>
 <body>
     <div id="allmap"></div>
     <script type="text/javascript">
-        // 1. 初始化地图
-        var map = new BMap.Map("allmap");
-        var defaultPoint = new BMap.Point(120.15, 30.28); // 默认坐标 (例如杭州)
-        map.centerAndZoom(defaultPoint, 16);
-        map.enableScrollWheelZoom(true);     // 开启鼠标滚轮缩放
+        // ==========================================
+        // 核心坐标转换引擎: WGS-84 (真实GPS/谷歌) 转 BD-09 (百度地图)
+        // ==========================================
+        var PI = 3.1415926535897932384626;
+        var a = 6378245.0;
+        var ee = 0.00669342162296594323;
 
-        // 2. 初始化机器人标记点 (可以使用自定义图标)
+        function transformLat(x, y) {
+            var ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x));
+            ret += (20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0 / 3.0;
+            ret += (20.0 * Math.sin(y * PI) + 40.0 * Math.sin(y / 3.0 * PI)) * 2.0 / 3.0;
+            ret += (160.0 * Math.sin(y / 12.0 * PI) + 320 * Math.sin(y * PI / 30.0)) * 2.0 / 3.0;
+            return ret;
+        }
+
+        function transformLon(x, y) {
+            var ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x));
+            ret += (20.0 * Math.sin(6.0 * x * PI) + 20.0 * Math.sin(2.0 * x * PI)) * 2.0 / 3.0;
+            ret += (20.0 * Math.sin(x * PI) + 40.0 * Math.sin(x / 3.0 * PI)) * 2.0 / 3.0;
+            ret += (150.0 * Math.sin(x / 12.0 * PI) + 300.0 * Math.sin(x / 30.0 * PI)) * 2.0 / 3.0;
+            return ret;
+        }
+
+        function wgs84ToBd09(lng, lat) {
+            // 1. WGS84 转 GCJ02 (火星坐标系)
+            var dLat = transformLat(lng - 105.0, lat - 35.0);
+            var dLng = transformLon(lng - 105.0, lat - 35.0);
+            var radLat = lat / 180.0 * PI;
+            var magic = Math.sin(radLat);
+            magic = 1 - ee * magic * magic;
+            var sqrtMagic = Math.sqrt(magic);
+            dLat = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * PI);
+            dLng = (dLng * 180.0) / (a / sqrtMagic * Math.cos(radLat) * PI);
+            var gcjLng = lng + dLng;
+            var gcjLat = lat + dLat;
+
+            // 2. GCJ02 转 BD09 (百度坐标系)
+            var z = Math.sqrt(gcjLng * gcjLng + gcjLat * gcjLat) + 0.00002 * Math.sin(gcjLat * PI * 3000.0 / 180.0);
+            var theta = Math.atan2(gcjLat, gcjLng) + 0.000003 * Math.cos(gcjLng * PI * 3000.0 / 180.0);
+            var bdLng = z * Math.cos(theta) + 0.0065;
+            var bdLat = z * Math.sin(theta) + 0.006;
+
+            return new BMap.Point(bdLng, bdLat);
+        }
+
+        // ==========================================
+        // 地图初始化与业务逻辑
+        // ==========================================
+        var map = new BMap.Map("allmap");
+
+        // 使用你的 Google (WGS-84) 坐标，通过函数转换为百度坐标
+        var rawGoogleLng = 109.529083; // 东经 109°31'44.7"
+        var rawGoogleLat = 18.311556;  // 北纬 18°18'41.6"
+        var defaultPoint = wgs84ToBd09(rawGoogleLng, rawGoogleLat);
+
+        map.centerAndZoom(defaultPoint, 16);
+        map.enableScrollWheelZoom(true);
+
         var marker = new BMap.Marker(defaultPoint);
         map.addOverlay(marker);
 
-        // 3. Qt C++ 将调用的接口函数
-        // 接收经纬度 (十进制度数) 并更新标记
+        // Qt C++ 调用的接口函数：接收下位机原始 GPS 坐标，转换为百度坐标后显示
         function updateRobotPosition(lon, lat) {
-            var newPoint = new BMap.Point(lon, lat);
-            marker.setPosition(newPoint);
-            map.panTo(newPoint); // 视角跟随机器人
+            // lon 和 lat 是下位机解析出来的 WGS-84 坐标，必须转换！
+            var bdPoint = wgs84ToBd09(lon, lat);
+            marker.setPosition(bdPoint);
+            map.panTo(bdPoint);
         }
     </script>
 </body>
